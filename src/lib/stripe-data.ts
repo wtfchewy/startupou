@@ -6,7 +6,7 @@ import {
   format,
   eachMonthOfInterval,
 } from "date-fns";
-import { StartupConfig } from "./startups";
+import { StartupConfig, Founder } from "./startups";
 
 export interface MonthlyRevenue {
   month: string; // "Jan", "Feb", etc.
@@ -19,6 +19,7 @@ export interface StartupData {
   domain: string;
   logo: string;
   founded: string;
+  founders: Founder[];
   mrr: number;
   previousMrr: number;
   growthRate: number; // percentage
@@ -187,6 +188,7 @@ export async function fetchStartupData(
     domain: config.domain,
     logo: config.logo,
     founded: config.founded,
+    founders: config.founders,
     mrr: Math.round(mrr),
     previousMrr: Math.round(prevMonthCharges),
     growthRate: Math.round(growthRate * 10) / 10,
@@ -232,6 +234,7 @@ function generateDemoData(config: StartupConfig): StartupData {
     domain: config.domain,
     logo: config.logo,
     founded: config.founded,
+    founders: config.founders,
     mrr: baseMrr,
     previousMrr,
     growthRate,

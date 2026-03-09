@@ -125,6 +125,26 @@ export default function StartupCard({ startup }: Props) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+
+      {/* Founders */}
+      {startup.founders.length > 0 && (
+        <div className="flex items-center gap-[0.8vw] pt-[1vh]">
+
+          {startup.founders.map((founder) => (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <div key={founder.linkedin} className="flex items-center gap-[0.5vw]">
+              <img
+                src={founder.photo}
+                alt={founder.name}
+                className="h-6 w-6 rounded-full object-cover"
+              />
+              <span className="text-xs text-gray-500">
+                {founder.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
