@@ -12,6 +12,7 @@ export interface StartupConfig {
   founded: string; // e.g. "Jan 2025"
   founders: Founder[];
   stripeSecretKey: string;
+  metered?: boolean; // true if this startup uses usage-based billing
 }
 
 export const STARTUPS: StartupConfig[] = [
@@ -29,5 +30,6 @@ export const STARTUPS: StartupConfig[] = [
       },
     ],
     stripeSecretKey: process.env.HONCH || "",
+    metered: true,
   },
 ]

@@ -64,8 +64,11 @@ async function getChargesForPeriod(
   return total / 100; // convert cents to dollars
 }
 
-async function getMRR(stripe: Stripe): Promise<number> {
-  let mrr = 0;
+/**
+ * Gets fixed MRR from non-metered subscription items.
+ */
+async function getFixedMRR(stripe: Stripe): Promise<number> {
+  let fixedMrr = 0;
   let hasMore = true;
   let startingAfter: string | undefined;
 
@@ -80,6 +83,9 @@ async function getMRR(stripe: Stripe): Promise<number> {
 
     for (const sub of subscriptions.data) {
       for (const item of sub.items.data) {
+        // Skip metered items — those are calculated from meter usage
+        if (item.price?.recurring?.usage_type === "metered") continue;
+
         const amount = item.price?.unit_amount || 0;
         const quantity = item.quantity || 1;
         const interval = item.price?.recurring?.interval;
@@ -95,7 +101,7 @@ async function getMRR(stripe: Stripe): Promise<number> {
         } else if (interval === "day") {
           monthly = (amount * quantity * 30.44) / intervalCount;
         }
-        mrr += monthly;
+        fixedMrr += monthly;
       }
     }
 
@@ -105,7 +111,271 @@ async function getMRR(stripe: Stripe): Promise<number> {
     }
   }
 
-  return mrr / 100; // convert cents to dollars
+  return fixedMrr / 100; // convert cents to dollars
+}
+
+interface MeterPriceInfo {
+  priceId: string;
+  billingScheme: string;
+  unitAmount: number | null; // cents, for per_unit pricing
+  tiersMode: string | null; // "volume" or "graduated"
+  tiers: Array<{
+    upTo: number | null;
+    flatAmount: number | null;
+    unitAmount: number;
+  }>;
+}
+
+/**
+ * Builds a map of meter ID → price info by scanning active subscription items.
+ * Handles both simple per_unit and tiered pricing.
+ */
+async function getMeterPriceMap(
+  stripe: Stripe
+): Promise<Map<string, MeterPriceInfo>> {
+  const meterPrices = new Map<string, MeterPriceInfo>();
+  let hasMore = true;
+  let startingAfter: string | undefined;
+
+  while (hasMore) {
+    const params: Stripe.SubscriptionListParams = {
+      status: "active",
+      limit: 100,
+    };
+    if (startingAfter) params.starting_after = startingAfter;
+
+    const subscriptions = await stripe.subscriptions.list(params);
+
+    for (const sub of subscriptions.data) {
+      for (const item of sub.items.data) {
+        const price = item.price;
+        if (
+          price?.recurring?.usage_type === "metered" &&
+          price.recurring.meter &&
+          !meterPrices.has(price.recurring.meter)
+        ) {
+          // Fetch full price with tiers expanded
+          const fullPrice = await stripe.prices.retrieve(price.id, {
+            expand: ["tiers"],
+          });
+
+          meterPrices.set(price.recurring.meter, {
+            priceId: price.id,
+            billingScheme: fullPrice.billing_scheme,
+            unitAmount: fullPrice.unit_amount,
+            tiersMode: fullPrice.tiers_mode,
+            tiers: (fullPrice.tiers || []).map((t) => ({
+              upTo: t.up_to,
+              flatAmount: t.flat_amount,
+              unitAmount: t.unit_amount || 0,
+            })),
+          });
+        }
+      }
+    }
+
+    hasMore = subscriptions.has_more;
+    if (subscriptions.data.length > 0) {
+      startingAfter = subscriptions.data[subscriptions.data.length - 1].id;
+    }
+  }
+
+  return meterPrices;
+}
+
+/**
+ * Calculates the cost in cents for a given usage quantity using the price info.
+ * Supports per_unit, volume tiered, and graduated tiered pricing.
+ */
+function calculateTieredCost(usage: number, priceInfo: MeterPriceInfo): number {
+  if (priceInfo.billingScheme === "per_unit" && priceInfo.unitAmount) {
+    return usage * priceInfo.unitAmount;
+  }
+
+  if (priceInfo.tiers.length === 0) return 0;
+
+  if (priceInfo.tiersMode === "volume") {
+    // Volume: the entire quantity falls into one tier
+    for (const tier of priceInfo.tiers) {
+      if (tier.upTo === null || usage <= tier.upTo) {
+        return (tier.flatAmount || 0) + usage * tier.unitAmount;
+      }
+    }
+  }
+
+  if (priceInfo.tiersMode === "graduated") {
+    // Graduated: each unit of usage is priced at the tier it falls into
+    let cost = 0;
+    let remaining = usage;
+    let prevLimit = 0;
+
+    for (const tier of priceInfo.tiers) {
+      if (remaining <= 0) break;
+      const tierLimit = tier.upTo === null ? Infinity : tier.upTo;
+      const tierQty = Math.min(remaining, tierLimit - prevLimit);
+      cost += (tier.flatAmount || 0) + tierQty * tier.unitAmount;
+      remaining -= tierQty;
+      prevLimit = tierLimit;
+    }
+    return cost;
+  }
+
+  return 0;
+}
+
+/**
+ * Shared context for meter revenue calculations — fetches meters, prices,
+ * and customers once, then reuses them across multiple period calculations.
+ */
+async function getMeterContext(stripe: Stripe) {
+  // Get all active meters
+  const meters: Stripe.Billing.Meter[] = [];
+  let hasMore = true;
+  let startingAfter: string | undefined;
+
+  while (hasMore) {
+    const params: Stripe.Billing.MeterListParams = {
+      status: "active",
+    };
+    if (startingAfter)
+      (params as Stripe.Billing.MeterListParams & { starting_after: string })
+        .starting_after = startingAfter;
+
+    const result = await stripe.billing.meters.list(params);
+    meters.push(...result.data);
+    hasMore = result.has_more;
+    if (result.data.length > 0) {
+      startingAfter = result.data[result.data.length - 1].id;
+    }
+  }
+
+  const meterPrices = await getMeterPriceMap(stripe);
+
+  // Get all customer IDs
+  const customerIds: string[] = [];
+  hasMore = true;
+  startingAfter = undefined;
+
+  while (hasMore) {
+    const params: Stripe.CustomerListParams = { limit: 100 };
+    if (startingAfter) params.starting_after = startingAfter;
+
+    const customers = await stripe.customers.list(params);
+    for (const c of customers.data) {
+      customerIds.push(c.id);
+    }
+    hasMore = customers.has_more;
+    if (customers.data.length > 0) {
+      startingAfter = customers.data[customers.data.length - 1].id;
+    }
+  }
+
+  return { meters, meterPrices, customerIds };
+}
+
+/**
+ * Calculates the total meter usage cost for a given period.
+ * Uses per-customer tiered pricing calculation.
+ */
+async function getMeterCostForPeriod(
+  stripe: Stripe,
+  ctx: Awaited<ReturnType<typeof getMeterContext>>,
+  start: Date,
+  end: Date
+): Promise<number> {
+  const startTs = Math.floor(start.getTime() / 1000);
+  const endTs = Math.floor(end.getTime() / 1000);
+  if (endTs <= startTs) return 0;
+
+  let totalCents = 0;
+
+  for (const meter of ctx.meters) {
+    const priceInfo = ctx.meterPrices.get(meter.id);
+    if (!priceInfo) continue;
+
+    const customerUsages = await Promise.all(
+      ctx.customerIds.map(async (customerId) => {
+        try {
+          const summaries = await stripe.billing.meters.listEventSummaries(
+            meter.id,
+            {
+              customer: customerId,
+              start_time: startTs,
+              end_time: endTs,
+            }
+          );
+          let usage = 0;
+          for (const summary of summaries.data) {
+            usage += summary.aggregated_value;
+          }
+          return usage;
+        } catch {
+          return 0;
+        }
+      })
+    );
+
+    for (const usage of customerUsages) {
+      if (usage <= 0) continue;
+      totalCents += calculateTieredCost(usage, priceInfo);
+    }
+  }
+
+  return totalCents / 100;
+}
+
+/**
+ * Calculates both actual and projected meter cost for the current month
+ * in a single pass (one set of API calls for usage summaries).
+ */
+async function getMeterCostCurrentAndProjected(
+  stripe: Stripe,
+  ctx: Awaited<ReturnType<typeof getMeterContext>>,
+  start: Date,
+  end: Date,
+  now: Date
+): Promise<{ current: number; projected: number }> {
+  const startTs = Math.floor(start.getTime() / 1000);
+  const endTs = Math.floor(end.getTime() / 1000);
+  if (endTs <= startTs) return { current: 0, projected: 0 };
+
+  const daysInMonth = endOfMonth(now).getDate();
+  const dayOfMonth = Math.max(now.getDate(), 1);
+
+  let currentCents = 0;
+  let projectedCents = 0;
+
+  for (const meter of ctx.meters) {
+    const priceInfo = ctx.meterPrices.get(meter.id);
+    if (!priceInfo) continue;
+
+    const customerUsages = await Promise.all(
+      ctx.customerIds.map(async (customerId) => {
+        try {
+          const summaries = await stripe.billing.meters.listEventSummaries(
+            meter.id,
+            { customer: customerId, start_time: startTs, end_time: endTs }
+          );
+          let usage = 0;
+          for (const summary of summaries.data) {
+            usage += summary.aggregated_value;
+          }
+          return usage;
+        } catch {
+          return 0;
+        }
+      })
+    );
+
+    for (const usage of customerUsages) {
+      if (usage <= 0) continue;
+      currentCents += calculateTieredCost(usage, priceInfo);
+      const projected = Math.round(usage * (daysInMonth / dayOfMonth));
+      projectedCents += calculateTieredCost(projected, priceInfo);
+    }
+  }
+
+  return { current: currentCents / 100, projected: projectedCents / 100 };
 }
 
 async function getCustomerCount(stripe: Stripe): Promise<number> {
@@ -143,18 +413,45 @@ export async function fetchStartupData(
   const monthStart = startOfMonth(now);
   const monthEnd = endOfMonth(now);
 
-  // Fetch current MRR and customer count
-  const [mrr, customers] = await Promise.all([
-    getMRR(stripe),
+  // Build meter context once if metered, reuse for all calculations
+  const meterCtx = config.metered ? await getMeterContext(stripe) : null;
+
+  const prevMonthStart = startOfMonth(subMonths(now, 1));
+  const prevMonthEnd = endOfMonth(subMonths(now, 1));
+
+  const [fixedMrr, customers, chargesThisMonth] = await Promise.all([
+    getFixedMRR(stripe),
     getCustomerCount(stripe),
+    getChargesForPeriod(stripe, monthStart, monthEnd),
   ]);
 
-  // Fetch revenue this month (actual charges, not MRR)
-  const revenueThisMonth = await getChargesForPeriod(
-    stripe,
-    monthStart,
-    monthEnd
-  );
+  // For metered startups, calculate current month (actual + projected) and previous month
+  let meterCurrentMonth = 0;
+  let meterProjected = 0;
+  let meterPrevMonth = 0;
+  if (meterCtx) {
+    const currentStart = startOfMonth(now);
+    currentStart.setSeconds(0, 0);
+    const currentEnd = new Date(now);
+    currentEnd.setSeconds(0, 0);
+    prevMonthStart.setSeconds(0, 0);
+    prevMonthEnd.setSeconds(0, 0);
+
+    // Fetch current month usage + previous month cost in parallel
+    const [currentMonthResult, prevCost] = await Promise.all([
+      getMeterCostCurrentAndProjected(stripe, meterCtx, currentStart, currentEnd, now),
+      getMeterCostForPeriod(stripe, meterCtx, prevMonthStart, prevMonthEnd),
+    ]);
+
+    meterCurrentMonth = currentMonthResult.current;
+    meterProjected = currentMonthResult.projected;
+    meterPrevMonth = prevCost;
+  }
+
+  const mrr = fixedMrr + meterProjected;
+  const revenueThisMonth = config.metered
+    ? meterCurrentMonth
+    : chargesThisMonth;
 
   // Fetch last 6 months of revenue for the chart
   const months = eachMonthOfInterval({
@@ -164,9 +461,36 @@ export async function fetchStartupData(
 
   const monthlyRevenue: MonthlyRevenue[] = await Promise.all(
     months.map(async (month) => {
-      const start = startOfMonth(month);
-      const end = endOfMonth(month);
-      const revenue = await getChargesForPeriod(stripe, start, end);
+      const mStart = startOfMonth(month);
+      const mEnd = endOfMonth(month);
+      const isCurrentMonth =
+        mStart.getMonth() === now.getMonth() &&
+        mStart.getFullYear() === now.getFullYear();
+
+      let revenue: number;
+      if (config.metered && meterCtx) {
+        if (isCurrentMonth) {
+          // Already calculated above
+          revenue = meterCurrentMonth;
+        } else {
+          // Past months: query meter usage for that period
+          const periodStart = new Date(mStart);
+          periodStart.setSeconds(0, 0);
+          const periodEnd = startOfMonth(
+            new Date(mStart.getFullYear(), mStart.getMonth() + 1, 1)
+          );
+          periodEnd.setSeconds(0, 0);
+          revenue = await getMeterCostForPeriod(
+            stripe,
+            meterCtx,
+            periodStart,
+            periodEnd
+          );
+        }
+      } else {
+        revenue = await getChargesForPeriod(stripe, mStart, mEnd);
+      }
+
       return {
         month: format(month, "MMM"),
         revenue: Math.round(revenue),
@@ -174,13 +498,19 @@ export async function fetchStartupData(
     })
   );
 
-  // Calculate previous month MRR for growth rate
-  const prevMonthCharges = monthlyRevenue[monthlyRevenue.length - 2]?.revenue || 0;
-  const currentMonthCharges = monthlyRevenue[monthlyRevenue.length - 1]?.revenue || 0;
+  // Growth rate: compare current vs previous month revenue
+  const currentMonthRevenue = config.metered
+    ? meterCurrentMonth
+    : monthlyRevenue[monthlyRevenue.length - 1]?.revenue || 0;
+  const prevMonthRevenue = config.metered
+    ? meterPrevMonth
+    : monthlyRevenue[monthlyRevenue.length - 2]?.revenue || 0;
   const growthRate =
-    prevMonthCharges > 0
-      ? ((currentMonthCharges - prevMonthCharges) / prevMonthCharges) * 100
-      : 0;
+    prevMonthRevenue > 0
+      ? ((currentMonthRevenue - prevMonthRevenue) / prevMonthRevenue) * 100
+      : currentMonthRevenue > 0
+        ? 100
+        : 0;
 
   return {
     name: config.name,
@@ -190,7 +520,7 @@ export async function fetchStartupData(
     founded: config.founded,
     founders: config.founders,
     mrr: Math.round(mrr),
-    previousMrr: Math.round(prevMonthCharges),
+    previousMrr: Math.round(prevMonthRevenue),
     growthRate: Math.round(growthRate * 10) / 10,
     revenueThisMonth: Math.round(revenueThisMonth),
     customers,
