@@ -109,13 +109,12 @@ export default function Leaderboard() {
               Avg Growth Rate
             </p>
             <p
-              className={`text-[2rem] font-bold leading-tight ${
-                avgGrowth > 0
+              className={`text-[2rem] font-bold leading-tight ${avgGrowth > 0
                   ? "text-emerald-600"
                   : avgGrowth < 0
-                  ? "text-red-500"
-                  : "text-black"
-              }`}
+                    ? "text-red-500"
+                    : "text-black"
+                }`}
             >
               {avgGrowth > 0 ? "+" : ""}
               {avgGrowth.toFixed(1)}%
@@ -137,10 +136,21 @@ export default function Leaderboard() {
 
       {/* Right: Startup Cards Grid */}
       <div className="min-h-0 flex-1">
-        <div className="grid h-full auto-rows-fr grid-cols-2 gap-[1.2vw]">
+        <div className="grid h-full auto-rows-fr grid-cols-2 grid-rows-2 gap-[1.2vw]">
           {sorted.map((startup) => (
             <StartupCard key={startup.name} startup={startup} />
           ))}
+
+          {/* CTA Card */}
+          <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-300 bg-white/50 p-[1.2vw] text-center">
+            <p className="text-[1.3rem] font-bold text-gray-800">
+              Want to be on the board?
+            </p>
+            <p className="mt-1 text-sm text-gray-500">
+              Email{" "}
+              <span className="font-semibold text-black">wes@ou.edu</span>
+            </p>
+          </div>
         </div>
       </div>
 
