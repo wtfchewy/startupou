@@ -21,7 +21,7 @@ function formatCurrency(value: number): string {
 
 export default function StartupCard({ startup }: Props) {
   return (
-    <div className="flex flex-col overflow-hidden rounded-2xl bg-white p-[1.2vw]">
+    <div className="flex min-h-[280px] flex-col overflow-hidden rounded-2xl bg-white p-4 lg:min-h-0 lg:p-[1.2vw]">
       {/* Header */}
       <div className="mb-[0.5vh] flex items-start justify-between">
         <div>

@@ -74,9 +74,9 @@ export default function Leaderboard() {
   const seconds = countdown % 60;
 
   return (
-    <div className="relative flex h-screen gap-[3vw] p-[2.5vh_3vw]">
+    <div className="relative flex h-screen flex-col gap-6 overflow-y-auto p-6 lg:flex-row lg:gap-[3vw] lg:overflow-hidden lg:p-[2.5vh_3vw]">
       {/* Left Sidebar */}
-      <div className="flex w-[22vw] shrink-0 flex-col justify-center">
+      <div className="flex shrink-0 flex-col lg:w-[22vw] lg:justify-center">
         <h1 className="text-[3.5rem] font-bold leading-tight text-black">
           Startup OU
         </h1>
@@ -110,10 +110,10 @@ export default function Leaderboard() {
             </p>
             <p
               className={`text-[2rem] font-bold leading-tight ${avgGrowth > 0
-                  ? "text-emerald-600"
-                  : avgGrowth < 0
-                    ? "text-red-500"
-                    : "text-black"
+                ? "text-emerald-600"
+                : avgGrowth < 0
+                  ? "text-red-500"
+                  : "text-black"
                 }`}
             >
               {avgGrowth > 0 ? "+" : ""}
@@ -136,13 +136,13 @@ export default function Leaderboard() {
 
       {/* Right: Startup Cards Grid */}
       <div className="min-h-0 flex-1">
-        <div className="grid h-full auto-rows-fr grid-cols-2 grid-rows-2 gap-[1.2vw]">
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:h-full lg:auto-rows-fr lg:grid-cols-2 lg:grid-rows-2 lg:gap-[1.2vw]">
           {sorted.map((startup) => (
             <StartupCard key={startup.name} startup={startup} />
           ))}
 
           {/* CTA Card */}
-          <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-300 bg-white/50 p-[1.2vw] text-center">
+          <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-300 bg-white/50 p-4 text-center lg:min-h-0 lg:p-[1.2vw]">
             <p className="text-[1.3rem] font-bold text-gray-800">
               Want to be on the board?
             </p>
@@ -155,7 +155,7 @@ export default function Leaderboard() {
       </div>
 
       {/* Refresh timer */}
-      <div className="absolute bottom-[2vh] left-[3vw] text-xs text-gray-400">
+      <div className="hidden lg:block absolute bottom-[2vh] left-[3vw] text-xs text-gray-400">
         Updating in {minutes}:{seconds.toString().padStart(2, "0")}
       </div>
     </div>
